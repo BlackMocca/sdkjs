@@ -5485,15 +5485,16 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
 		// Collect line-break positions for Thai distributed paragraphs:
 		// Map<ParaRun, Set<charIdx>> — charIdx is the last char on each non-final line
 		var thaiLineBreaks = null;
-		if (!bUseSelection && par.Lines && par.Lines.length > 1)
+		var lbLinesCount = (typeof par.GetLinesCount === 'function') ? par.GetLinesCount() : 0;
+		if (!bUseSelection && lbLinesCount > 1)
 		{
 			var lbParaPr = par.Get_CompiledPr2 ? par.Get_CompiledPr2(false).ParaPr : par.Pr;
 			if (lbParaPr && lbParaPr.Jc === align_Distributed)
 			{
 				var lbMap = new Map();
-				for (var lbL = 0; lbL < par.Lines.length - 1; lbL++)
+				for (var lbL = 0; lbL < lbLinesCount - 1; lbL++)
 				{
-					var lbLineObj = par.Lines[lbL];
+					var lbLineObj = (typeof par.getLine === 'function') ? par.getLine(lbL) : (par.Lines ? par.Lines[lbL] : null);
 					if (!lbLineObj || !lbLineObj.Ranges || lbLineObj.Ranges.length === 0)
 						continue;
 					var lbLastRangeIdx = lbLineObj.Ranges.length - 1;
@@ -5502,18 +5503,29 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
 					var lbRun = par.Content[lbRunIdx];
 					if (lbRun && lbRun.Type === para_Run && typeof lbRun.getRangePos === 'function')
 					{
-						var lbPos = lbRun.getRangePos(lbL, lbLastRangeIdx);
-						if (lbPos && lbPos[1] !== undefined)
+						try
 						{
-							if (!lbMap.has(lbRun))
-								lbMap.set(lbRun, new Set());
-							lbMap.get(lbRun).add(lbPos[1]);
+							var lbPos = lbRun.getRangePos(lbL, lbLastRangeIdx);
+							if (lbPos && typeof lbPos[1] === 'number' && lbPos[1] >= 0 && lbPos[1] < lbRun.Content.length)
+							{
+								if (!lbMap.has(lbRun))
+									lbMap.set(lbRun, new Set());
+								lbMap.get(lbRun).add(lbPos[1]);
+							}
 						}
+						catch(e) {}
 					}
 				}
 				if (lbMap.size > 0)
 					thaiLineBreaks = lbMap;
 			}
+		}
+		if (typeof window !== 'undefined' && window.AscCommon && window.AscCommon._debugThaiExport)
+		{
+			console.warn('[ThaiExport] lbLinesCount=' + lbLinesCount
+				+ ' lbParaPrJc=' + (typeof par.GetLinesCount === 'function' && lbLinesCount > 0 ? (par.Get_CompiledPr2 ? par.Get_CompiledPr2(false).ParaPr.Jc : (par.Pr && par.Pr.Jc)) : 'N/A')
+				+ ' align_Distributed=' + align_Distributed
+				+ ' mapSize=' + (thaiLineBreaks ? thaiLineBreaks.size : 'null'));
 		}
 
         for ( var i = ParaStart; i <= ParaEnd && i < Content.length; ++i )
@@ -6063,6 +6075,17 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
         for (var i = nStart; i < nEnd && i < Content.length; ++i)
         {
             var item = Content[i];
+			// Inject <w:br/> BEFORE the first character of each new line
+			// in Thai distributed paragraphs. lbPos[1] from getRangePos is
+			// exclusive (= index of first char on the new line), so the break
+			// must be emitted before we accumulate/write that character.
+			if (lbRunBreaks && lbRunBreaks.has(i) && (para_Text === item.Type || para_Space === item.Type))
+			{
+				sCurText = this.WriteText(sCurText, textType);
+				sCurInstrText = this.WriteText(sCurInstrText, instrTextType);
+				oThis.memory.WriteByte(c_oSerRunType.linebreak);
+				oThis.memory.WriteLong(c_oSerPropLenType.Null);
+			}
 			if (para_Text === item.Type || para_Space === item.Type) {
 				sCurInstrText = this.WriteText(sCurInstrText, instrTextType);
 			} else if (para_InstrText === item.Type) {
@@ -6170,14 +6193,6 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
 					}
                     break;
             }
-			// Inject <w:br/> after the last character of each non-final line
-			// in Thai distributed paragraphs so that DOCX line breaks match the editor
-			if (lbRunBreaks && lbRunBreaks.has(i) && (para_Text === item.Type || para_Space === item.Type))
-			{
-				sCurText = this.WriteText(sCurText, textType);
-				oThis.memory.WriteByte(c_oSerRunType.linebreak);
-				oThis.memory.WriteLong(c_oSerPropLenType.Null);
-			}
         }
 		sCurText = this.WriteText(sCurText, textType);
 		sCurInstrText = this.WriteText(sCurInstrText, instrTextType);
