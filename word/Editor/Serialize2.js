@@ -5481,6 +5481,41 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
 		var Content = par.Content;
         //todo commentStart для копирования
         var oThis = this;
+
+		// Collect line-break positions for Thai distributed paragraphs:
+		// Map<ParaRun, Set<charIdx>> — charIdx is the last char on each non-final line
+		var thaiLineBreaks = null;
+		if (!bUseSelection && par.Lines && par.Lines.length > 1)
+		{
+			var lbParaPr = par.Get_CompiledPr2 ? par.Get_CompiledPr2(false).ParaPr : par.Pr;
+			if (lbParaPr && lbParaPr.Jc === align_Distributed)
+			{
+				var lbMap = new Map();
+				for (var lbL = 0; lbL < par.Lines.length - 1; lbL++)
+				{
+					var lbLineObj = par.Lines[lbL];
+					if (!lbLineObj || !lbLineObj.Ranges || lbLineObj.Ranges.length === 0)
+						continue;
+					var lbLastRangeIdx = lbLineObj.Ranges.length - 1;
+					var lbRange = lbLineObj.Ranges[lbLastRangeIdx];
+					var lbRunIdx = lbRange.EndPos;
+					var lbRun = par.Content[lbRunIdx];
+					if (lbRun && lbRun.Type === para_Run && typeof lbRun.getRangePos === 'function')
+					{
+						var lbPos = lbRun.getRangePos(lbL, lbLastRangeIdx);
+						if (lbPos && lbPos[1] !== undefined)
+						{
+							if (!lbMap.has(lbRun))
+								lbMap.set(lbRun, new Set());
+							lbMap.get(lbRun).add(lbPos[1]);
+						}
+					}
+				}
+				if (lbMap.size > 0)
+					thaiLineBreaks = lbMap;
+			}
+		}
+
         for ( var i = ParaStart; i <= ParaEnd && i < Content.length; ++i )
         {
             var item = Content[i];
@@ -5503,10 +5538,10 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
 							}
 							oThis.bs.WriteItem(recordType, function () {WriteTrackRevision(oThis.bs, oThis.saveParams.trackRevisionId++, reviewInfo, {run: function(){fCallback(delText);}});});
 						}, function(delText) {
-							oThis.WriteRun(item, bUseSelection, delText);
+							oThis.WriteRun(item, bUseSelection, delText, thaiLineBreaks);
 						});
                     } else {
-                        this.WriteRun(item, bUseSelection, false);
+                        this.WriteRun(item, bUseSelection, false, thaiLineBreaks);
                     }
                     break;
 				case para_Field:
@@ -5745,7 +5780,7 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
             });
         });
     }
-    this.WriteRun = function (oRun, bUseSelection, delText) {
+    this.WriteRun = function (oRun, bUseSelection, delText, thaiLineBreaks) {
         //Paragraph.Selection последний элемент входит в выделение
         //Run.Selection последний элемент не входит в выделение
         var oThis = this;
@@ -5794,7 +5829,7 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
                         oThis.bs.WriteItem(c_oSerRunType.rPr, function () { oThis.brPrs.Write_rPr(oRun.Pr, oRun.Pr, null); });
                     //Content
                     oThis.bs.WriteItem(c_oSerRunType.Content, function () {
-                        oThis.WriteRunContent(oRun, elem.nStart, elem.nEnd, delText);
+                        oThis.WriteRunContent(oRun, elem.nStart, elem.nEnd, delText, thaiLineBreaks);
                     });
                 });
             }
@@ -6015,15 +6050,16 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
 		}
 	};
 
-    this.WriteRunContent = function (oRun, nStart, nEnd, delText)
+    this.WriteRunContent = function (oRun, nStart, nEnd, delText, thaiLineBreaks)
     {
         var oThis = this;
-        
+
         var Content = oRun.Content;
         var sCurText = "";
 		var sCurInstrText = "";
 		var textType = delText ? c_oSerRunType.delText : c_oSerRunType.run;
 		var instrTextType = delText ? c_oSerRunType.delInstrText : c_oSerRunType.instrText;
+		var lbRunBreaks = thaiLineBreaks ? thaiLineBreaks.get(oRun) : null;
         for (var i = nStart; i < nEnd && i < Content.length; ++i)
         {
             var item = Content[i];
@@ -6134,6 +6170,14 @@ function BinaryDocumentTableWriter(memory, doc, oMapCommentId, oNumIdMap, copyPa
 					}
                     break;
             }
+			// Inject <w:br/> after the last character of each non-final line
+			// in Thai distributed paragraphs so that DOCX line breaks match the editor
+			if (lbRunBreaks && lbRunBreaks.has(i) && (para_Text === item.Type || para_Space === item.Type))
+			{
+				sCurText = this.WriteText(sCurText, textType);
+				oThis.memory.WriteByte(c_oSerRunType.linebreak);
+				oThis.memory.WriteLong(c_oSerPropLenType.Null);
+			}
         }
 		sCurText = this.WriteText(sCurText, textType);
 		sCurInstrText = this.WriteText(sCurInstrText, instrTextType);
